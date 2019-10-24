@@ -1,0 +1,25 @@
+version: "2"
+
+services:
+  mongo:
+    image: mongo:3.4
+    container_name: mongo
+    networks:
+      - mongolog
+    ports:
+      - 27017:27017
+    expose:
+      - 27017
+    entrypoint: [ "/usr/bin/mongod", "--replSet", "rs0" ]
+  redis:
+    image: redis:4.0
+    container_name: redis
+    networks:
+      - mongolog
+    ports:
+      - 6379:6379
+    expose:
+      - 6379
+networks:
+  mongolog:
+    driver: bridge
