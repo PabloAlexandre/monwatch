@@ -3,8 +3,10 @@ const defaults = require('lodash/defaults');
 const omitBy = require('lodash/omitBy');
 const isNull = require('lodash/isNull');
 
-const { cache, storage } = require('./repositories');
+const { cache, storage, time } = require('./repositories');
 const { delay } = require('./utils');
+
+const redis = require('./repositories/lib/redis');
 
 class HandlerProcessor {
   constructor(oplogStorage, database, collection, handler) {
@@ -22,23 +24,25 @@ class HandlerProcessor {
   }
   
   async throttleSetup(desiredTimestamp) {
-    const diff = dayjs.unix(desiredTimestamp) - dayjs().unix();
+    const time = await time();
+    const diff = dayjs.unix(desiredTimestamp) - time;
     if(diff > 0) await delay(diff);
   } 
 
   async setupGlobalWorkers() {
+    const time = await time();
     // review if lastTimestamp should had default value
     const stats =  await this.cache.getQueueStats();
     const {
       lastTimestamp,
       desiredTimestamp,
     } = defaults(omitBy(stats, isNull), {
-      lastTimestamp: dayjs().unix(),
-      desiredTimestamp: dayjs().add(2, 'second').unix(),
+      lastTimestamp: time,
+      desiredTimestamp: dayjs.unix(time).add(2, 'second').unix(),
     });
 
     await this.throttleSetup(desiredTimestamp);
-    const currentTimestamp = dayjs().unix();
+    const currentTimestamp = time;
 
     const query = this.oplogStorage.buildOplogQuery(this.databaseName, this.collectionName, lastTimestamp, currentTimestamp);
     const count = await this.oplogStorage.count(query);
