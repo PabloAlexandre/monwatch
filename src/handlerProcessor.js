@@ -42,7 +42,7 @@ class HandlerProcessor {
     });
 
     await this.throttleSetup(desiredTimestamp);
-    const currentTimestamp = time;
+    const currentTimestamp = await time();
 
     const query = this.oplogStorage.buildOplogQuery(this.databaseName, this.collectionName, lastTimestamp, currentTimestamp);
     const count = await this.oplogStorage.count(query);
