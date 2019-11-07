@@ -49,8 +49,8 @@ const getQueueStats = identifier => async () => {
   };
 }
 
-module.exports = operationIdentifier => {
-  const identifier = `mongolog:${operationIdentifier}`;
+module.exports = (operationIdentifier, overrideDefaultIdentifier = false) => {
+  const identifier = overrideDefaultIdentifier ? operationIdentifier : `mongolog:${operationIdentifier}`;
 
   return {
     isAdmin: isAdmin(identifier),
