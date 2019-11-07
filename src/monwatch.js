@@ -1,7 +1,7 @@
-const { storage } = require('./repositories')
+const { storage } = require('./repositories');
 const handlerProcessor = require('./handlerProcessor');
 
-module.exports = function mongolog(config) {
+module.exports = function monwatch(config) {
   return {
     config,
     handlers: [],
@@ -13,7 +13,7 @@ module.exports = function mongolog(config) {
       const oplog = await storage('local', 'oplog.rs');
 
       const handlerProcessorWithOplog = handlerProcessor(oplog);
-      this.handlers.forEach(it => handlerProcessorWithOplog(it).start());
-    }
-  }
-}
+      this.handlers.forEach((it) => handlerProcessorWithOplog(it).start());
+    },
+  };
+};
