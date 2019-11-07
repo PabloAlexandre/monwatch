@@ -6,8 +6,6 @@ const isNull = require('lodash/isNull');
 const { cache, storage, time } = require('./repositories');
 const { delay } = require('./utils');
 
-const redis = require('./repositories/lib/redis');
-
 class HandlerProcessor {
   constructor(oplogStorage, database, collection, handler) {
     this.collectionName = collection;
@@ -22,63 +20,68 @@ class HandlerProcessor {
 
     this.setupLocalWorker();
   }
-  
+
+  // eslint-disable-next-line
   async throttleSetup(desiredTimestamp) {
-    const time = await time();
-    const diff = dayjs.unix(desiredTimestamp) - time;
-    if(diff > 0) await delay(diff);
-  } 
+    const currentTime = await time();
+    const diff = dayjs.unix(desiredTimestamp) - currentTime;
+    if (diff > 0) await delay(diff);
+  }
 
   async setupGlobalWorkers() {
-    const time = await time();
+    const defaultLastTimestamp = await time();
     // review if lastTimestamp should had default value
-    const stats =  await this.cache.getQueueStats();
+    const stats = await this.cache.getQueueStats();
     const {
       lastTimestamp,
       desiredTimestamp,
     } = defaults(omitBy(stats, isNull), {
-      lastTimestamp: time,
+      lastTimestamp: defaultLastTimestamp,
       desiredTimestamp: dayjs.unix(time).add(2, 'second').unix(),
     });
 
     await this.throttleSetup(desiredTimestamp);
     const currentTimestamp = await time();
 
-    const query = this.oplogStorage.buildOplogQuery(this.databaseName, this.collectionName, lastTimestamp, currentTimestamp);
+    const query = this.oplogStorage
+      .buildOplogQuery(this.databaseName, this.collectionName, lastTimestamp, currentTimestamp);
+
     const count = await this.oplogStorage.count(query);
 
-    if(count > 0) {
+    if (count > 0) {
       const PAGE_SIZE = 50;
       await this.cache.addRegistersInQueue(count, query, PAGE_SIZE);
-      await this.cache.updateQueueStats(currentTimestamp, dayjs.unix(currentTimestamp).add(2, 'second').unix())
+      await this.cache.updateQueueStats(currentTimestamp, dayjs.unix(currentTimestamp).add(2, 'second').unix());
     } else {
       await this.cache.updateQueueStats(lastTimestamp, desiredTimestamp);
     }
   }
-  
+
   async setupGlobalWorkersIfNeededAndGetItem() {
-    if(await this.cache.isAdmin()) await this.setupGlobalWorkers();
-    
+    if (await this.cache.isAdmin()) await this.setupGlobalWorkers();
+
     return this.cache.getItemFromQueue(5);
-  } 
-  
+  }
+
   async setupLocalWorker() {
-    const item = await this.cache.getItemFromQueue() || await this.setupGlobalWorkersIfNeededAndGetItem();
-    
+    const item = await this.cache.getItemFromQueue()
+      || await this.setupGlobalWorkersIfNeededAndGetItem();
+
     // if item don't exists, log waiting status
 
     return item ? this.process(item) : this.setupLocalWorker();
   }
-  
+
   async process(item) {
     try {
       const registers = await this.oplogStorage.getAndPopulateOplogRequest(item, this.storage);
       await this.handler(registers);
-    } catch(err) {
+    } catch (err) {
       console.log(err);
       /*
-      * Before start to process, we should add item in execution queue register, to recover if execution fails.
-      * When fails, we should to put back in queue to process. Maybe in setupGlobalWorkers?
+      * Before start to process, we should add item in execution queue register, to recover if
+      * execution fails. When fails, we should to put back in queue to process.
+      * Maybe in setupGlobalWorkers?
       */
     }
 
@@ -86,6 +89,4 @@ class HandlerProcessor {
   }
 }
 
-
-module.exports = (oplogStorage) => ({ database, collection, handler}) => 
-  new HandlerProcessor(oplogStorage, database, collection, handler);
+module.exports = (oplogStorage) => ({ database, collection, handler }) => new HandlerProcessor(oplogStorage, database, collection, handler); // eslint-disable-line

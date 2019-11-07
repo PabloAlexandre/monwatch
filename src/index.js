@@ -1,3 +1,3 @@
-const mongolog = require('./mongolog');
+const monwatch = require('./monwatch');
 
-module.exports = mongolog;
+module.exports = monwatch;
