@@ -1,4 +1,5 @@
 const redis = require('./lib/redis');
+const { hashObject } = require('../utils');
 
 // Maybe add some verification to stop processing if key had expired and process come back for life?
 const isAdmin = (identifier) => async () => {
@@ -18,6 +19,8 @@ const getItemFromQueue = (identifier) => async (timeout = null) => {
   return item && timeout ? JSON.parse(item[1]) : JSON.parse(item);
 };
 
+const addItem = (key) => (item) => redis.rpushAsync(key, JSON.stringify(item));
+
 const addRegistersInQueue = (identifier) => async (count, query, pageSize) => Promise.all(
   new Array(Math.ceil(count / pageSize))
     .fill()
@@ -26,7 +29,7 @@ const addRegistersInQueue = (identifier) => async (count, query, pageSize) => Pr
       pageSize,
       query,
     }))
-    .map((it) => redis.rpushAsync(`${identifier}:queue`, JSON.stringify(it))),
+    .map(addItem(`${identifier}:queue`)),
 );
 
 const updateQueueStats = (identifier) => async (lastTimestamp, desiredTimestamp) => {
@@ -47,6 +50,30 @@ const getQueueStats = (identifier) => async () => {
   };
 };
 
+const processItemWithCacheErrorHandler = (identifier) => async (item, callback) => {
+  const itemHash = hashObject(item);
+  const key = `${identifier}:executionQueue:${itemHash}`;
+
+  const executionCount = await redis.incrbyAsync(`${identifier}:retries:${itemHash}`, 1);
+  await redis.setAsync(key, JSON.stringify(item));
+
+  try {
+    await callback();
+  } catch (err) {
+    // If maximum retries reach, go to deadLetter. Transform this number in config later
+    if (executionCount === 5) {
+      await addItem(`${identifier}:deadLetterQueue`)(item);
+    } else {
+      await addItem(`${identifier}:queue`)(item);
+    }
+
+    await redis.delAsync(key);
+    throw new Error('Error processing item');
+  }
+
+  await Promise.all([redis.delAsync(key), redis.delAsync(`${identifier}:retries:${itemHash}`)]);
+};
+
 module.exports = (operationIdentifier, overrideDefaultIdentifier = false) => {
   const identifier = overrideDefaultIdentifier ? operationIdentifier : `monwatch:${operationIdentifier}`;
 
@@ -56,5 +83,6 @@ module.exports = (operationIdentifier, overrideDefaultIdentifier = false) => {
     addRegistersInQueue: addRegistersInQueue(identifier),
     getQueueStats: getQueueStats(identifier),
     updateQueueStats: updateQueueStats(identifier),
+    processItemWithCacheErrorHandler: processItemWithCacheErrorHandler(identifier),
   };
 };
