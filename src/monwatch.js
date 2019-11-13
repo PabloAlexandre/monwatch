@@ -6,26 +6,42 @@ const isNull = require('lodash/isNull');
 const { cache, storage, time } = require('./repositories');
 const { delay } = require('./utils');
 
+
+const defaultConfig = {
+  pageSize: 50,
+  queueWait: 5,
+};
+
 class Monwatch {
-  constructor({ database, collection, handler }) {
+  constructor({
+    database, collection, handler, clusterName,
+  }) {
     this.collectionName = collection;
     this.databaseName = database;
     this.handler = handler;
+    this.clusterName = clusterName;
     this.subscribers = {};
     this.stopped = false;
+    this.onStop = null;
   }
 
   stop() {
     this.stopped = true;
+    this.onStop = () => this.emit('stopped');
+  }
+
+  isStopped() {
+    return this.stopped;
   }
 
   async start() {
     this.oplogStorage = await storage('local', 'oplog.rs');
     this.storage = await storage(this.databaseName, this.collectionName);
-    this.cache = await cache(`${this.databaseName}:${this.collectionName}`);
+    this.cache = await cache(`${this.clusterName}:${this.databaseName}:${this.collectionName}`);
     this.stopped = false;
+    this.config = defaultConfig;
 
-    return this.setupLocalWorker();
+    this.setupLocalWorker();
   }
 
   on(event, callback) {
@@ -71,7 +87,7 @@ class Monwatch {
     const count = await this.oplogStorage.count(query);
 
     if (count > 0) {
-      const PAGE_SIZE = 50;
+      const PAGE_SIZE = this.config.pageSize;
       await this.cache.addRegistersInQueue(count, query, PAGE_SIZE);
       await this.cache.updateQueueStats(currentTimestamp, dayjs.unix(currentTimestamp).add(2, 'second').unix());
       this.emit('instructions_setted');
@@ -88,7 +104,7 @@ class Monwatch {
       this.emit('waiting_instructions');
     }
 
-    return this.cache.getItemFromQueue(5);
+    return this.cache.getItemFromQueue(this.config.queueWait);
   }
 
   async setupLocalWorker() {
@@ -97,30 +113,45 @@ class Monwatch {
 
     if (!item) {
       this.emit('no_items');
-      return this.stopped ? null : this.setupLocalWorker();
+
+      if (this.isStopped()) {
+        if (this.onStop) return this.onStop();
+
+        return null;
+      }
+
+      return this.setupLocalWorker();
     }
 
     return this.process(item);
   }
 
   async process(item) {
-    try {
-      const registers = await this.oplogStorage.getAndPopulateOplogRequest(item, this.storage);
-      await this.handler(registers);
-    } catch (err) {
-      this.emit('error_processing', err);
+    this.emit('receive_items');
 
-      /*
-      * Before start to process, we should add item in execution queue register, to recover if
-      * execution fails. When fails, we should to put back in queue to process.
-      * Maybe in setupGlobalWorkers?
-      */
-    }
+    await this.cache.processItemWithCacheErrorHandler(item, async () => {
+      try {
+        const registers = await this.oplogStorage.getAndPopulateOplogRequest(item, this.storage);
+        await this.handler(registers);
+      } catch (err) {
+        this.emit('error_processing', err);
+      }
+    });
 
-    if (!this.stopped) {
+    /*
+    * Before start to process, we should add item in execution queue register, to recover if
+    * execution fails. When fails, we should to put back in queue to process.
+    * Maybe in setupGlobalWorkers?
+    */
+
+    if (!this.isStopped()) {
       this.setupLocalWorker();
+    } else if (this.onStop) {
+      this.onStop();
     }
   }
 }
 
-module.exports = Monwatch; // eslint-disable-line
+module.exports = Object.assign(Monwatch, {
+  config: defaultConfig,
+}); // eslint-disable-line
