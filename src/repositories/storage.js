@@ -14,8 +14,8 @@ const formatQuery = (query) => {
   * For some reason, bson Timestamp invert Timestamp parameters order.
   * First parameter is low and last is high.
   */
-  if (newQuery.ts.$gt) newQuery.ts.$gt = Timestamp(1, newQuery.ts.$gt);
-  if (newQuery.ts.$lte) newQuery.ts.$lte = Timestamp(1, newQuery.ts.$lte);
+  if (newQuery.ts.$gt) newQuery.ts.$gt = Timestamp(0, newQuery.ts.$gt);
+  if (newQuery.ts.$lte) newQuery.ts.$lte = Timestamp(0, newQuery.ts.$lte);
 
   return newQuery;
 };
