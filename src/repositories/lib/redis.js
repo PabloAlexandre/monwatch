@@ -6,4 +6,6 @@ bluebird.promisifyAll(redis.Multi.prototype);
 
 const client = redis.createClient(process.env.REDIS_URI || 'redis://localhost:6379');
 
-module.exports = client;
+module.exports = Object.assign(client, {
+  createInstance: () => redis.createClient(process.env.REDIS_URI || 'redis://localhost:6379'),
+});

@@ -2,26 +2,31 @@ const redis = require('./lib/redis');
 const { hashObject } = require('../utils');
 
 // Maybe add some verification to stop processing if key had expired and process come back for life?
-const isAdmin = (identifier) => async () => {
+const isAdmin = (identifier, redisInstance) => async () => {
   // Set expiration time to avoid lock key when admin process fails
-  const administratorWorkers = await redis.hincrbyAsync(identifier, 'administrators', 1);
-  if (administratorWorkers === 1) return true;
+  const administratorWorkers = await redisInstance.incrAsync(`${identifier}:administrators`);
+  if (administratorWorkers === 1) {
+    await redisInstance.expireAsync(`${identifier}:administrators`, 180);
+    return true;
+  }
 
-  await redis.hincrbyAsync(identifier, 'administrators', -1);
   return false;
 };
 
-const getItemFromQueue = (identifier) => async (timeout = null) => {
+const getItemFromQueue = (identifier, redisInstance) => async (timeout = null) => {
   const item = timeout
-    ? await redis.blpopAsync(`${identifier}:queue`, timeout)
-    : await redis.lpopAsync(`${identifier}:queue`);
+    ? await redisInstance.blpopAsync(`${identifier}:queue`, timeout)
+    : await redisInstance.lpopAsync(`${identifier}:queue`);
 
   return item && timeout ? JSON.parse(item[1]) : JSON.parse(item);
 };
 
-const addItem = (key) => (item) => redis.rpushAsync(key, JSON.stringify(item));
+const addItem = (key, redisInstance) => (item) => redisInstance
+  .rpushAsync(key, JSON.stringify(item));
 
-const addRegistersInQueue = (identifier) => async (count, query, pageSize) => Promise.all(
+const addRegistersInQueue = (identifier, redisInstance) => async (
+  count, query, pageSize,
+) => Promise.all(
   new Array(Math.ceil(count / pageSize))
     .fill()
     .map((_, i) => ({
@@ -29,20 +34,20 @@ const addRegistersInQueue = (identifier) => async (count, query, pageSize) => Pr
       pageSize,
       query,
     }))
-    .map(addItem(`${identifier}:queue`)),
+    .map(addItem(`${identifier}:queue`, redisInstance)),
 );
 
-const updateQueueStats = (identifier) => async (lastTimestamp, desiredTimestamp) => {
+const updateQueueStats = (identifier, redisInstance) => async (lastTimestamp, desiredTimestamp) => {
   await Promise.all([
-    redis.hsetAsync(identifier, 'lastTimestamp', lastTimestamp),
-    redis.hsetAsync(identifier, 'desiredTimestamp', desiredTimestamp),
+    redisInstance.hsetAsync(identifier, 'lastTimestamp', lastTimestamp),
+    redisInstance.hsetAsync(identifier, 'desiredTimestamp', desiredTimestamp),
   ]);
 
-  await redis.hincrbyAsync(identifier, 'administrators', -1);
+  await redisInstance.setAsync(`${identifier}:administrators`, 0);
 };
 
-const getQueueStats = (identifier) => async () => {
-  const [lastTimestamp, desiredTimestamp] = await redis.hmgetAsync(identifier, 'lastTimestamp', 'desiredTimestamp');
+const getQueueStats = (identifier, redisInstance) => async () => {
+  const [lastTimestamp, desiredTimestamp] = await redisInstance.hmgetAsync(identifier, 'lastTimestamp', 'desiredTimestamp');
 
   return {
     lastTimestamp,
@@ -50,39 +55,40 @@ const getQueueStats = (identifier) => async () => {
   };
 };
 
-const processItemWithCacheErrorHandler = (identifier) => async (item, callback) => {
+const processItemWithCacheErrorHandler = (identifier, redisInstance) => async (item, callback) => {
   const itemHash = hashObject(item);
   const key = `${identifier}:executionQueue:${itemHash}`;
 
-  const executionCount = await redis.incrbyAsync(`${identifier}:retries:${itemHash}`, 1);
-  await redis.setAsync(key, JSON.stringify(item));
+  const executionCount = await redisInstance.incrbyAsync(`${identifier}:retries:${itemHash}`, 1);
+  await redisInstance.setAsync(key, JSON.stringify(item));
 
   try {
     await callback();
   } catch (err) {
     // If maximum retries reach, go to deadLetter. Transform this number in config later
     if (executionCount === 5) {
-      await addItem(`${identifier}:deadLetterQueue`)(item);
+      await addItem(`${identifier}:deadLetterQueue`, redisInstance)(item);
     } else {
-      await addItem(`${identifier}:queue`)(item);
+      await addItem(`${identifier}:queue`, redisInstance)(item);
     }
 
-    await redis.delAsync(key);
+    await redisInstance.delAsync(key);
     throw new Error('Error processing item');
   }
 
-  await Promise.all([redis.delAsync(key), redis.delAsync(`${identifier}:retries:${itemHash}`)]);
+  await Promise.all([redisInstance.delAsync(key), redisInstance.delAsync(`${identifier}:retries:${itemHash}`)]);
 };
 
 module.exports = (operationIdentifier, overrideDefaultIdentifier = false) => {
+  const redisInstance = redis.createInstance();
   const identifier = overrideDefaultIdentifier ? operationIdentifier : `monwatch:${operationIdentifier}`;
 
   return {
-    isAdmin: isAdmin(identifier),
-    getItemFromQueue: getItemFromQueue(identifier),
-    addRegistersInQueue: addRegistersInQueue(identifier),
-    getQueueStats: getQueueStats(identifier),
-    updateQueueStats: updateQueueStats(identifier),
-    processItemWithCacheErrorHandler: processItemWithCacheErrorHandler(identifier),
+    isAdmin: isAdmin(identifier, redisInstance),
+    getItemFromQueue: getItemFromQueue(identifier, redisInstance),
+    addRegistersInQueue: addRegistersInQueue(identifier, redisInstance),
+    getQueueStats: getQueueStats(identifier, redisInstance),
+    updateQueueStats: updateQueueStats(identifier, redisInstance),
+    processItemWithCacheErrorHandler: processItemWithCacheErrorHandler(identifier, redisInstance),
   };
 };

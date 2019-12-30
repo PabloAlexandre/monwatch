@@ -6,7 +6,6 @@ const isNull = require('lodash/isNull');
 const { cache, storage, time } = require('./repositories');
 const { delay } = require('./utils');
 
-
 const defaultConfig = {
   pageSize: 50,
   queueWait: 5,
@@ -60,8 +59,8 @@ class Monwatch {
   // eslint-disable-next-line
   async throttleSetup(desiredTimestamp) {
     const currentTime = await time();
-    const diff = dayjs.unix(desiredTimestamp) - currentTime;
-    if (diff > 0) await delay(diff);
+    const diff = parseInt(desiredTimestamp, 10) - parseInt(currentTime, 10);
+    if (diff > 0) await delay(diff * 1000);
   }
 
   async setupGlobalWorkers() {
@@ -75,12 +74,11 @@ class Monwatch {
       desiredTimestamp,
     } = defaults(omitBy(stats, isNull), {
       lastTimestamp: defaultLastTimestamp,
-      desiredTimestamp: dayjs.unix(time).add(2, 'second').unix(),
+      desiredTimestamp: dayjs.unix(defaultLastTimestamp).add(this.config.queueWait, 'second').unix(),
     });
 
     await this.throttleSetup(desiredTimestamp);
     const currentTimestamp = await time();
-
     const query = this.oplogStorage
       .buildOplogQuery(this.databaseName, this.collectionName, lastTimestamp, currentTimestamp);
 
@@ -89,11 +87,11 @@ class Monwatch {
     if (count > 0) {
       const PAGE_SIZE = this.config.pageSize;
       await this.cache.addRegistersInQueue(count, query, PAGE_SIZE);
-      await this.cache.updateQueueStats(currentTimestamp, dayjs.unix(currentTimestamp).add(2, 'second').unix());
+      await this.cache.updateQueueStats(currentTimestamp, dayjs.unix(currentTimestamp).add(this.config.queueWait, 'second').unix());
       this.emit('instructions_setted');
     } else {
       this.emit('no_instructions');
-      await this.cache.updateQueueStats(lastTimestamp, desiredTimestamp);
+      await this.cache.updateQueueStats(lastTimestamp, dayjs.unix(currentTimestamp).add(this.config.queueWait, 'second').unix());
     }
   }
 
